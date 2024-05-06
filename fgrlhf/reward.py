@@ -769,26 +769,28 @@ class BaselineReward(BasicReward):
 
 class SelectiveFineGrainedReward(BasicReward):
 
-  def __init__(self,
-               tokenizer,
-               non_factual_model_ckpt=None,
-               factual_model_ckpt=None,
-               completeness_model_ckpt=None,
-               kl_coef=0.,
-               verbosity_positive_reward=1.0,
-               verbosity_negative_reward=-1.0,
-               factuality_positive_reward=1.0,
-               factuality_negative_reward=-1.0,
-               completeness_reward_mean=0.0,
-               completeness_reward_std=1.0,
-               completeness_reward_bias=0.0,
-               completeness_reward_scale=1.0,
-               sep="</s>"):
+  def __init__(
+      self,
+      tokenizer,
+      model_ckpt=None,
+      completeness=False,
+      factuality=False,
+      verbosity=False,
+      kl_coef=0.,
+      verbosity_positive_reward=1.0,
+      verbosity_negative_reward=-1.0,
+      factuality_positive_reward=1.0,
+      factuality_negative_reward=-1.0,
+      completeness_reward_mean=0.0,
+      completeness_reward_std=1.0,
+      completeness_reward_bias=0.0,
+      completeness_reward_scale=1.0,
+      sep="</s>",
+  ):
 
     super().__init__(kl_coef)
 
-    assert bool(non_factual_model_ckpt) + bool(factual_model_ckpt) + bool(
-        completeness_model_ckpt) == 1
+    assert completeness + factuality + verbosity == 1
 
     self.completeness_reward_bias = completeness_reward_bias
     self.completeness_reward_scale = completeness_reward_scale
@@ -797,28 +799,28 @@ class SelectiveFineGrainedReward(BasicReward):
     self.factuality_reward = None
     self.completeness_reward = None
 
-    if non_factual_model_ckpt:
+    if verbosity:
       self.verbosity_reward = SubSentenceVerbosityReward(
           tokenizer,
-          non_factual_model_ckpt,
+          model_ckpt,
           verbosity_positive_reward,
           verbosity_negative_reward,
           sep=sep,
       )
 
-    if factual_model_ckpt:
+    if factuality:
       self.factuality_reward = FactualityReward(
           tokenizer,
-          factual_model_ckpt,
+          model_ckpt,
           factuality_positive_reward,
           factuality_negative_reward,
           sep=sep,
       )
 
-    if completeness_model_ckpt:
+    if completeness:
       self.completeness_reward = PreferenceReward(
           tokenizer,
-          completeness_model_ckpt,
+          model_ckpt,
           mean=completeness_reward_mean,
           std=completeness_reward_std,
           bias=completeness_reward_bias,
