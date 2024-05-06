@@ -857,6 +857,7 @@ class SelectiveFineGrainedReward(BasicReward):
           generated_texts,
           metadata,
       )
+      fine_grained_rewards = fine_grained_rewards['verbosity_rewards']
     elif self.factuality_reward:
       fine_grained_rewards = self.factuality_reward.get_reward(
           prompts_input_ids,
@@ -866,6 +867,7 @@ class SelectiveFineGrainedReward(BasicReward):
           generated_texts,
           metadata,
       )
+      fine_grained_rewards = fine_grained_rewards['factuality_rewards']
 
     return {"rewards": fine_grained_rewards}
 
@@ -887,6 +889,226 @@ class SelectiveFineGrainedReward(BasicReward):
         generated_texts,
         metadata,
     )
+
+    return {'rewards/raw': rewards_output['rewards']}
+
+  def eval_metrics(
+      self,
+      prompts_input_ids: torch.tensor,
+      prompts_attention_mask: torch.tensor,
+      generated_input_ids: torch.tensor,  # (B, output_len)
+      generated_attention_mask: torch.tensor,  # (B, output_len)
+      generated_texts: List[str],
+      metadata=None,
+  ):
+
+    output = {}
+
+    finegrained_rewards_output = self.get_finegrained_reward(
+        prompts_input_ids, prompts_attention_mask, generated_input_ids,
+        generated_attention_mask, generated_texts, metadata)
+
+    # convert finegrained rewards to portions
+    n_sub_sentences = finegrained_rewards_output['n_sub_sentences']
+    n_sentences = finegrained_rewards_output['n_sentences']
+
+    relevance_ratios = []
+    factuality_ratios = []
+    completeness_rewards = []
+
+    for text_idx, generated_text in enumerate(generated_texts):
+      # verbosity reward
+      n_sub_sentence = n_sub_sentences[text_idx]
+      n_verbosity_correct = finegrained_rewards_output['n_verbosity_correct'][
+          text_idx]
+      relevance_ratios.append(n_verbosity_correct / n_sub_sentence)
+
+      # factuality reward
+      n_sentence = n_sentences[text_idx]
+      n_factuality_correct = finegrained_rewards_output['n_factuality_correct'][
+          text_idx]
+      factuality_ratios.append(n_factuality_correct / n_sentence)
+
+      # completeness reward
+      completeness_rewards.append(
+          (finegrained_rewards_output['completeness_rewards'][text_idx][-1] -
+           self.completeness_reward_bias) / self.completeness_reward_scale)
+
+    # compute rouge scores
+    rouge_scores = get_rouge_scores(generated_texts,
+                                    [m['references'] for m in metadata])
+
+    # lens of generations
+    generation_lens = torch.sum(generated_attention_mask, dim=-1).tolist()
+
+    output.update({
+        "eval/rouge": rouge_scores,
+        "eval/rewards": [
+            np.sum(sublist) for sublist in finegrained_rewards_output['rewards']
+        ],
+        "eval/relevance_ratios": relevance_ratios,
+        "eval/factuality_ratios": factuality_ratios,
+        "eval/completeness_rewards": completeness_rewards,
+        "eval/n_sub_sentences": n_sub_sentences,
+        "eval/n_sentences": n_sentences,
+        "eval/lengths": generation_lens
+    })
+
+    return output
+
+  def aggregate_metrics(self, wandb_table, value_columns):
+    # how to average over the metrics in wandb table for reporting
+    stats = {}
+    for k in value_columns:
+      stats[k] = np.mean(
+          [row[wandb_table.columns.index(k)] for row in wandb_table.data])
+
+    # relevance ratios and factual ratios are weighted by the number of (sub)sentences
+
+    stats['eval/relevance_ratios'] = (np.sum([
+        row[wandb_table.columns.index('eval/relevance_ratios')] *
+        row[wandb_table.columns.index('eval/n_sub_sentences')]
+        for row in wandb_table.data
+    ]) / np.sum([
+        row[wandb_table.columns.index('eval/n_sub_sentences')]
+        for row in wandb_table.data
+    ]))
+
+    stats['eval/factuality_ratios'] = (np.sum([
+        row[wandb_table.columns.index('eval/factuality_ratios')] *
+        row[wandb_table.columns.index('eval/n_sentences')]
+        for row in wandb_table.data
+    ]) / np.sum([
+        row[wandb_table.columns.index('eval/n_sentences')]
+        for row in wandb_table.data
+    ]))
+
+    return stats
+
+
+
+class SelectiveFineGrainedReward2(BasicReward):
+
+  def __init__(
+      self,
+      tokenizer,
+      non_factual_model_ckpt,
+      factual_model_ckpt,
+      completeness_model_ckpt,
+      kl_coef,
+      completeness=False,
+      factuality=False,
+      relevance=False,
+      verbosity_positive_reward=1.0,
+      verbosity_negative_reward=-1.0,
+      factuality_positive_reward=1.0,
+      factuality_negative_reward=-1.0,
+      completeness_reward_mean=0.0,
+      completeness_reward_std=1.0,
+      completeness_reward_bias=0.0,
+      completeness_reward_scale=1.0,
+      sep="</s>",
+  ):
+
+    super().__init__(kl_coef)
+
+    assert completeness + factuality + relevance == 1
+
+    self.completeness = completeness
+    self.factuality = factuality
+    self.relevance = relevance
+
+    self.completeness_reward_bias = completeness_reward_bias
+    self.completeness_reward_scale = completeness_reward_scale
+
+    self.verbosity_reward = SubSentenceVerbosityReward(
+        tokenizer,
+        non_factual_model_ckpt,
+        verbosity_positive_reward,
+        verbosity_negative_reward,
+        sep=sep)
+
+    self.factuality_reward = FactualityReward(tokenizer,
+                                              factual_model_ckpt,
+                                              factuality_positive_reward,
+                                              factuality_negative_reward,
+                                              sep=sep)
+
+    self.completeness_reward = PreferenceReward(tokenizer,
+                                                completeness_model_ckpt,
+                                                mean=completeness_reward_mean,
+                                                std=completeness_reward_std,
+                                                bias=completeness_reward_bias,
+                                                scale=completeness_reward_scale)
+
+    self.nlp = spacy.load("en_core_web_sm")
+
+  def get_finegrained_reward(self, prompts_input_ids, prompts_attention_mask,
+                             generated_input_ids, generated_attention_mask,
+                             generated_texts, metadata):
+
+    fine_grained_rewards = []
+    n_sub_sentences = []
+    n_sentences = []
+
+    verbosity = self.verbosity_reward.get_reward(prompts_input_ids,
+                                                 prompts_attention_mask,
+                                                 generated_input_ids,
+                                                 generated_attention_mask,
+                                                 generated_texts, metadata)
+
+    n_sub_sentences = verbosity['n_sub_sentences']
+    verbosity_rewards = verbosity['verbosity_rewards']
+    n_verbosity_correct = verbosity['n_corrects']
+
+    factuality = self.factuality_reward.get_reward(prompts_input_ids,
+                                                   prompts_attention_mask,
+                                                   generated_input_ids,
+                                                   generated_attention_mask,
+                                                   generated_texts, metadata)
+
+    n_sentences = factuality['n_sentences']
+    factuality_rewards = factuality['factuality_rewards']
+    n_factuality_correct = factuality['n_corrects']
+
+    completeness_rewards = self.completeness_reward.get_reward(
+        prompts_input_ids, prompts_attention_mask, generated_input_ids,
+        generated_attention_mask, generated_texts, metadata)
+
+    # combine the rewards
+    if self.completeness:
+      fine_grained_rewards = completeness_rewards
+    elif self.relevance:
+      fine_grained_rewards = verbosity_rewards
+    elif self.factuality:
+      fine_grained_rewards = factuality_rewards
+
+    return {
+        "rewards": fine_grained_rewards,
+        "n_sub_sentences": n_sub_sentences,
+        "n_sentences": n_sentences,
+        "verbosity_rewards": verbosity_rewards,
+        "n_verbosity_correct": n_verbosity_correct,
+        "factuality_rewards": factuality_rewards,
+        "n_factuality_correct": n_factuality_correct,
+        "completeness_rewards": completeness_rewards
+    }
+
+  def get_reward(
+      self,
+      prompts_input_ids: torch.tensor,
+      prompts_attention_mask: torch.tensor,
+      generated_input_ids: torch.tensor,  # (B, output_len)
+      generated_attention_mask: torch.tensor,  # (B, output_len)
+      generated_texts: List[str],
+      metadata=None,
+  ):
+
+    rewards_output = self.get_finegrained_reward(prompts_input_ids,
+                                                 prompts_attention_mask,
+                                                 generated_input_ids,
+                                                 generated_attention_mask,
+                                                 generated_texts, metadata)
 
     return {'rewards/raw': rewards_output['rewards']}
 
