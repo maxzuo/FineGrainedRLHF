@@ -790,7 +790,7 @@ class SelectiveFineGrainedReward(BasicReward):
 
     super().__init__(kl_coef)
 
-    assert completeness + factuality + verbosity == 1
+    assert completeness + factuality + relevance == 1
 
     self.completeness_reward_bias = completeness_reward_bias
     self.completeness_reward_scale = completeness_reward_scale
