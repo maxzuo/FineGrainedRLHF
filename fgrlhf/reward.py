@@ -775,7 +775,7 @@ class SelectiveFineGrainedReward(BasicReward):
       model_ckpt=None,
       completeness=False,
       factuality=False,
-      verbosity=False,
+      relevance=False,
       kl_coef=0.,
       verbosity_positive_reward=1.0,
       verbosity_negative_reward=-1.0,
@@ -799,7 +799,7 @@ class SelectiveFineGrainedReward(BasicReward):
     self.factuality_reward = None
     self.completeness_reward = None
 
-    if verbosity:
+    if relevance:
       self.verbosity_reward = SubSentenceVerbosityReward(
           tokenizer,
           model_ckpt,
