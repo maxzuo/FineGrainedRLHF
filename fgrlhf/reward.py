@@ -992,10 +992,10 @@ class SelectiveFineGrainedReward2(BasicReward):
   def __init__(
       self,
       tokenizer,
-      non_factual_model_ckpt,
-      factual_model_ckpt,
-      completeness_model_ckpt,
-      kl_coef,
+      kl_coef=0.0,
+      non_factual_model_ckpt = None,
+      factual_model_ckpt = None,
+      completeness_model_ckpt = None,
       completeness=False,
       factuality=False,
       relevance=False,
@@ -1026,36 +1026,50 @@ class SelectiveFineGrainedReward2(BasicReward):
         non_factual_model_ckpt,
         verbosity_positive_reward,
         verbosity_negative_reward,
-        sep=sep)
+        sep=sep,
+    )
 
-    self.factuality_reward = FactualityReward(tokenizer,
-                                              factual_model_ckpt,
-                                              factuality_positive_reward,
-                                              factuality_negative_reward,
-                                              sep=sep)
+    self.factuality_reward = FactualityReward(
+        tokenizer,
+        factual_model_ckpt,
+        factuality_positive_reward,
+        factuality_negative_reward,
+        sep=sep,
+    )
 
-    self.completeness_reward = PreferenceReward(tokenizer,
-                                                completeness_model_ckpt,
-                                                mean=completeness_reward_mean,
-                                                std=completeness_reward_std,
-                                                bias=completeness_reward_bias,
-                                                scale=completeness_reward_scale)
+    self.completeness_reward = PreferenceReward(
+        tokenizer,
+        completeness_model_ckpt,
+        mean=completeness_reward_mean,
+        std=completeness_reward_std,
+        bias=completeness_reward_bias,
+        scale=completeness_reward_scale,
+    )
 
     self.nlp = spacy.load("en_core_web_sm")
 
-  def get_finegrained_reward(self, prompts_input_ids, prompts_attention_mask,
-                             generated_input_ids, generated_attention_mask,
-                             generated_texts, metadata):
+  def get_finegrained_reward(
+      self,
+      prompts_input_ids,
+      prompts_attention_mask,
+      generated_input_ids,
+      generated_attention_mask,
+      generated_texts,
+      metadata,
+  ):
 
     fine_grained_rewards = []
     n_sub_sentences = []
     n_sentences = []
 
-    verbosity = self.verbosity_reward.get_reward(prompts_input_ids,
-                                                 prompts_attention_mask,
-                                                 generated_input_ids,
-                                                 generated_attention_mask,
-                                                 generated_texts, metadata)
+    verbosity = self.verbosity_reward.get_reward(
+        prompts_input_ids,
+        prompts_attention_mask,
+        generated_input_ids,
+        generated_attention_mask,
+        generated_texts,
+        metadata,
+    )
 
     n_sub_sentences = verbosity['n_sub_sentences']
     verbosity_rewards = verbosity['verbosity_rewards']
